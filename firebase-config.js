@@ -1,0 +1,1179 @@
+// Firebase Configuration and Functions
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, orderBy, where, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+// Your web app's Firebase configuration
+const firebaseConfig = {
+    apiKey: "AIzaSyBt5IR0jg2sye3S1XdWxP0FBWZFP8D4OdQ",
+    authDomain: "paedigital2025.firebaseapp.com",
+    projectId: "paedigital2025",
+    storageBucket: "paedigital2025.firebasestorage.app",
+    messagingSenderId: "740229563465",
+    appId: "1:740229563465:web:2f740a1f2a33b1ff29ab98"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+// Hacer las variables globales
+window.db = db;
+window.auth = auth;
+window.collection = collection;
+window.addDoc = addDoc;
+window.getDocs = getDocs;
+window.doc = doc;
+window.updateDoc = updateDoc;
+window.deleteDoc = deleteDoc;
+window.query = query;
+window.orderBy = orderBy;
+window.where = where;
+window.onSnapshot = onSnapshot;
+
+// Función para actualizar el indicador de estado
+function actualizarIndicadorFirebase(estado, mensaje) {
+    const indicador = document.getElementById('indicador-conexion');
+    const texto = document.getElementById('firebase-status-text');
+    
+    if (indicador && texto) {
+        indicador.className = `firebase-status ${estado}`;
+        texto.textContent = mensaje;
+        
+        switch(estado) {
+            case 'connected':
+                indicador.innerHTML = '🔥 Firebase: Conectado';
+                break;
+            case 'disconnected':
+                indicador.innerHTML = '🔥 Firebase: Desconectado';
+                break;
+            case 'syncing':
+                indicador.innerHTML = '🔥 Firebase: Sincronizando...';
+                break;
+        }
+    }
+}
+
+// Función para mostrar notificaciones de Firebase
+function mostrarNotificacionFirebase(mensaje, tipo = 'info') {
+    // Crear elemento de notificación
+    const notificacion = document.createElement('div');
+    notificacion.className = `firebase-notification ${tipo}`;
+    notificacion.textContent = mensaje;
+    
+    // Agregar al DOM
+    document.body.appendChild(notificacion);
+    
+    // Mostrar con animación
+    setTimeout(() => {
+        notificacion.classList.add('show');
+    }, 100);
+    
+    // Ocultar después de 3 segundos
+    setTimeout(() => {
+        notificacion.classList.remove('show');
+        setTimeout(() => {
+            if (notificacion.parentNode) {
+                notificacion.parentNode.removeChild(notificacion);
+            }
+        }, 300);
+    }, 3000);
+}
+
+// Autenticación anónima
+signInAnonymously(auth).then(() => {
+    console.log('✅ Autenticado anónimamente con Firebase');
+    actualizarIndicadorFirebase('connected', 'Conectado a Firebase - Datos sincronizados');
+}).catch((error) => {
+    console.error('❌ Error de autenticación:', error);
+    actualizarIndicadorFirebase('disconnected', 'Error de conexión - Modo local');
+});
+
+// ==================== FUNCIONES PARA MOVIMIENTOS ====================
+
+// Función para agregar movimiento a Firebase
+window.agregarMovimientoFirebase = async function(movimiento) {
+    try {
+        console.log("🔥 INTENTANDO GUARDAR EN FIREBASE:", movimiento);
+        
+        const docRef = await addDoc(collection(db, "movimientos"), {
+            ...movimiento,
+            timestamp: new Date().toISOString(),
+            fechaCreacion: new Date().toISOString()
+        });
+        console.log("✅ MOVIMIENTO GUARDADO EN FIREBASE CON ID:", docRef.id);
+        
+        // Actualizar localStorage también
+        const movimientos = JSON.parse(localStorage.getItem('historial') || '[]');
+        movimientos.unshift({ id: docRef.id, ...movimiento, timestamp: new Date().toISOString() });
+        localStorage.setItem('historial', JSON.stringify(movimientos));
+        
+        // Si es un movimiento de entrada, salida o devolución, actualizar el inventario en Firebase
+        if (movimiento.tipo === 'entrada' || movimiento.tipo === 'salida' || movimiento.tipo === 'devolucion') {
+            console.log("📦 ACTUALIZANDO INVENTARIO EN FIREBASE...");
+            await actualizarInventarioEnFirebase(movimiento);
+        }
+        
+        // Mostrar notificación de éxito
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje(`✅ Movimiento guardado en Firebase (ID: ${docRef.id})`, 'exito');
+        }
+        
+        return docRef.id;
+    } catch (error) {
+        console.error("❌ ERROR GUARDANDO EN FIREBASE:", error);
+        console.error("❌ Detalles del error:", error.message, error.code);
+        
+        // Mostrar notificación de error
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje(`❌ Error guardando en Firebase: ${error.message}`, 'error');
+        }
+        
+        throw error;
+    }
+};
+
+// Función para actualizar inventario en Firebase
+window.actualizarInventarioEnFirebase = async function(movimiento) {
+    try {
+        console.log("📦 ACTUALIZANDO INVENTARIO EN FIREBASE:", movimiento);
+        
+        if (movimiento.tipo === 'devolucion') {
+            // Las devoluciones son especiales: restan de la sede origen y suman a BODEGA CENTRAL
+            await actualizarInventarioDevolucion(movimiento);
+        } else {
+            // Entradas y salidas normales
+            const clave = `${movimiento.producto}_${movimiento.sede}`;
+            
+            // Buscar si ya existe el producto en Firebase
+            const q = query(collection(db, "productos"), 
+                           where("producto", "==", movimiento.producto),
+                           where("sede", "==", movimiento.sede));
+            const querySnapshot = await getDocs(q);
+            
+            if (querySnapshot.empty) {
+                // Crear nuevo producto
+                const nuevoProducto = {
+                    producto: movimiento.producto,
+                    cantidad: movimiento.tipo === 'entrada' ? movimiento.cantidad : Math.max(0, -movimiento.cantidad),
+                    sede: movimiento.sede,
+                    lote: movimiento.lote || '',
+                    fechaVencimiento: movimiento.fechaVencimiento || '',
+                    diasRestantes: movimiento.diasRestantes || 0,
+                    ultimaActualizacion: new Date().toISOString(),
+                    fechaCreacion: new Date().toISOString()
+                };
+                
+                const docRef = await addDoc(collection(db, "productos"), nuevoProducto);
+                console.log("✅ NUEVO PRODUCTO CREADO EN FIREBASE:", docRef.id, nuevoProducto);
+            } else {
+                // Actualizar producto existente
+                const doc = querySnapshot.docs[0];
+                const productoActual = doc.data();
+                const nuevaCantidad = movimiento.tipo === 'entrada' 
+                    ? productoActual.cantidad + movimiento.cantidad
+                    : Math.max(0, productoActual.cantidad - movimiento.cantidad);
+                
+                const datosActualizados = {
+                    cantidad: nuevaCantidad,
+                    lote: movimiento.lote || productoActual.lote,
+                    fechaVencimiento: movimiento.fechaVencimiento || productoActual.fechaVencimiento,
+                    diasRestantes: movimiento.diasRestantes || productoActual.diasRestantes,
+                    ultimaActualizacion: new Date().toISOString()
+                };
+                
+                await updateDoc(doc.ref, datosActualizados);
+                console.log("✅ PRODUCTO ACTUALIZADO EN FIREBASE:", doc.id, datosActualizados);
+            }
+        }
+        
+        // También actualizar el inventario local inmediatamente
+        await actualizarInventarioLocal(movimiento);
+        
+    } catch (error) {
+        console.error("❌ ERROR ACTUALIZANDO INVENTARIO EN FIREBASE:", error);
+        console.error("❌ Detalles del error:", error.message, error.code);
+        // No lanzar error para no interrumpir el flujo principal
+    }
+};
+
+// Función específica para actualizar inventario en devoluciones
+window.actualizarInventarioDevolucion = async function(movimiento) {
+    try {
+        console.log("🔄 ACTUALIZANDO INVENTARIO PARA DEVOLUCIÓN:", movimiento);
+        
+        // 1. Restar de la sede origen
+        const qOrigen = query(collection(db, "productos"), 
+                             where("producto", "==", movimiento.producto),
+                             where("sede", "==", movimiento.sede));
+        const querySnapshotOrigen = await getDocs(qOrigen);
+        
+        if (!querySnapshotOrigen.empty) {
+            const docOrigen = querySnapshotOrigen.docs[0];
+            const productoOrigen = docOrigen.data();
+            const nuevaCantidadOrigen = Math.max(0, productoOrigen.cantidad - movimiento.cantidad);
+            
+            if (nuevaCantidadOrigen > 0) {
+                await updateDoc(docOrigen.ref, {
+                    cantidad: nuevaCantidadOrigen,
+                    ultimaActualizacion: new Date().toISOString()
+                });
+                console.log("✅ PRODUCTO ORIGEN ACTUALIZADO:", docOrigen.id, "cantidad:", nuevaCantidadOrigen);
+            } else {
+                // Si la cantidad llega a 0, eliminar el producto
+                await deleteDoc(docOrigen.ref);
+                console.log("🗑️ PRODUCTO ORIGEN ELIMINADO (cantidad = 0):", docOrigen.id);
+            }
+        }
+        
+        // 2. Sumar a BODEGA CENTRAL
+        const qBodega = query(collection(db, "productos"), 
+                             where("producto", "==", movimiento.producto),
+                             where("sede", "==", "BODEGA CENTRAL"));
+        const querySnapshotBodega = await getDocs(qBodega);
+        
+        if (querySnapshotBodega.empty) {
+            // Crear nuevo producto en bodega
+            const nuevoProductoBodega = {
+                producto: movimiento.producto,
+                cantidad: movimiento.cantidad,
+                sede: "BODEGA CENTRAL",
+                lote: movimiento.lote || '',
+                fechaVencimiento: movimiento.fechaVencimiento || '',
+                diasRestantes: movimiento.diasRestantes || 0,
+                ultimaActualizacion: new Date().toISOString(),
+                fechaCreacion: new Date().toISOString()
+            };
+            
+            const docRefBodega = await addDoc(collection(db, "productos"), nuevoProductoBodega);
+            console.log("✅ NUEVO PRODUCTO CREADO EN BODEGA:", docRefBodega.id, nuevoProductoBodega);
+        } else {
+            // Actualizar producto existente en bodega
+            const docBodega = querySnapshotBodega.docs[0];
+            const productoBodega = docBodega.data();
+            const nuevaCantidadBodega = productoBodega.cantidad + movimiento.cantidad;
+            
+            await updateDoc(docBodega.ref, {
+                cantidad: nuevaCantidadBodega,
+                ultimaActualizacion: new Date().toISOString()
+            });
+            console.log("✅ PRODUCTO BODEGA ACTUALIZADO:", docBodega.id, "cantidad:", nuevaCantidadBodega);
+        }
+        
+    } catch (error) {
+        console.error("❌ ERROR ACTUALIZANDO INVENTARIO DE DEVOLUCIÓN:", error);
+    }
+};
+
+// Función para actualizar inventario local
+window.actualizarInventarioLocal = async function(movimiento) {
+    try {
+        console.log("💾 ACTUALIZANDO INVENTARIO LOCAL:", movimiento);
+        
+        if (window.inventario === undefined) {
+            console.log("⚠️ Variable inventario no está disponible aún");
+            return;
+        }
+        
+        const clave = `${movimiento.producto}_${movimiento.sede}`;
+        
+        if (window.inventario[clave]) {
+            // Producto existe, actualizar cantidad
+            const cantidadActual = window.inventario[clave].cantidad || 0;
+            const nuevaCantidad = movimiento.tipo === 'entrada' 
+                ? cantidadActual + movimiento.cantidad
+                : Math.max(0, cantidadActual - movimiento.cantidad);
+            
+            window.inventario[clave].cantidad = nuevaCantidad;
+            window.inventario[clave].lote = movimiento.lote || window.inventario[clave].lote;
+            window.inventario[clave].fechaVencimiento = movimiento.fechaVencimiento || window.inventario[clave].fechaVencimiento;
+            window.inventario[clave].diasRestantes = movimiento.diasRestantes || window.inventario[clave].diasRestantes;
+            
+            console.log(`✅ INVENTARIO LOCAL ACTUALIZADO: ${movimiento.producto} - Cantidad: ${cantidadActual} → ${nuevaCantidad}`);
+        } else {
+            // Producto no existe, crear nuevo
+            window.inventario[clave] = {
+                producto: movimiento.producto,
+                cantidad: movimiento.tipo === 'entrada' ? movimiento.cantidad : Math.max(0, -movimiento.cantidad),
+                sede: movimiento.sede,
+                lote: movimiento.lote || '',
+                fechaVencimiento: movimiento.fechaVencimiento || '',
+                diasRestantes: movimiento.diasRestantes || 0
+            };
+            
+            console.log(`✅ NUEVO PRODUCTO AGREGADO AL INVENTARIO LOCAL: ${movimiento.producto} - Cantidad: ${window.inventario[clave].cantidad}`);
+        }
+        
+        // Guardar en localStorage
+        localStorage.setItem('inventario', JSON.stringify(window.inventario));
+        console.log("💾 Inventario local guardado en localStorage");
+        
+        // Actualizar la interfaz de stock siempre que haya cambios
+        if (window.mostrarStockActual) {
+            console.log("🔄 Actualizando interfaz de stock...");
+            window.mostrarStockActual();
+        } else {
+            console.log("⚠️ Función mostrarStockActual no disponible");
+        }
+        
+    } catch (error) {
+        console.error("❌ ERROR ACTUALIZANDO INVENTARIO LOCAL:", error);
+    }
+};
+
+// Función para obtener movimientos de Firebase
+window.obtenerMovimientosFirebase = async function() {
+    try {
+        const q = query(collection(db, "movimientos"), orderBy("timestamp", "desc"));
+        const querySnapshot = await getDocs(q);
+        const movimientos = [];
+        querySnapshot.forEach((doc) => {
+            movimientos.push({ id: doc.id, ...doc.data() });
+        });
+        console.log(`✅ Obtenidos ${movimientos.length} movimientos de Firebase`);
+        return movimientos;
+    } catch (error) {
+        console.error("❌ Error obteniendo movimientos: ", error);
+        return [];
+    }
+};
+
+// Función para escuchar movimientos en tiempo real
+window.escucharMovimientosTiempoReal = function() {
+    try {
+        console.log('👂 INICIANDO ESCUCHA EN TIEMPO REAL DE MOVIMIENTOS...');
+        const q = query(collection(db, "movimientos"), orderBy("timestamp", "desc"));
+        
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+            console.log('🔄 CAMBIOS DETECTADOS EN FIREBASE - Movimientos:', querySnapshot.size, 'documentos');
+            const movimientos = [];
+            querySnapshot.forEach((doc) => {
+                const movimiento = { id: doc.id, ...doc.data() };
+                movimientos.push(movimiento);
+                console.log('📄 Movimiento recibido:', movimiento.producto, '-', movimiento.tipo, '-', movimiento.fecha);
+            });
+            
+            // Actualizar el historial global
+            if (window.historial !== undefined) {
+                window.historial = movimientos;
+                console.log(`✅ HISTORIAL ACTUALIZADO CON ${movimientos.length} MOVIMIENTOS`);
+                
+                // Guardar en localStorage
+                localStorage.setItem('historial', JSON.stringify(movimientos));
+                console.log('💾 Historial guardado en localStorage');
+                
+                // Actualizar la interfaz si está en la sección de historial
+                if (window.cargarHistorial && document.getElementById('seccion-historial').classList.contains('activa')) {
+                    console.log('🔄 Actualizando interfaz de historial...');
+                    window.cargarHistorial();
+                }
+                
+                // Mostrar notificación de sincronización
+                if (window.mostrarMensaje) {
+                    window.mostrarMensaje(`🔄 ${movimientos.length} movimientos sincronizados`, 'info');
+                }
+            } else {
+                console.log('⚠️ Variable historial no está disponible aún');
+            }
+        }, (error) => {
+            console.error('❌ ERROR EN ESCUCHA DE TIEMPO REAL:', error);
+            console.error('❌ Código de error:', error.code);
+            console.error('❌ Mensaje de error:', error.message);
+            
+            if (window.mostrarMensaje) {
+                window.mostrarMensaje(`❌ Error en sincronización: ${error.message}`, 'error');
+            }
+        });
+        
+        // Guardar la función de desuscripción
+        window.unsubscribeMovimientos = unsubscribe;
+        console.log('✅ ESCUCHA EN TIEMPO REAL CONFIGURADA CORRECTAMENTE');
+        return unsubscribe;
+    } catch (error) {
+        console.error('❌ ERROR CONFIGURANDO ESCUCHA EN TIEMPO REAL:', error);
+        return null;
+    }
+};
+
+// ==================== FUNCIONES PARA PRODUCTOS ====================
+
+// Función para agregar producto a Firebase
+window.agregarProductoFirebase = async function(producto) {
+    try {
+        const docRef = await addDoc(collection(db, "productos"), {
+            ...producto,
+            ultimaActualizacion: new Date().toISOString(),
+            fechaCreacion: new Date().toISOString()
+        });
+        console.log("✅ Producto agregado con ID: ", docRef.id);
+        
+        // Actualizar localStorage también
+        const productos = JSON.parse(localStorage.getItem('productos') || '[]');
+        productos.push({ id: docRef.id, ...producto, ultimaActualizacion: new Date().toISOString() });
+        localStorage.setItem('productos', JSON.stringify(productos));
+        
+        return docRef.id;
+    } catch (error) {
+        console.error("❌ Error agregando producto: ", error);
+        throw error;
+    }
+};
+
+// Función para obtener productos de Firebase
+window.obtenerProductosFirebase = async function() {
+    try {
+        const querySnapshot = await getDocs(collection(db, "productos"));
+        const productos = [];
+        querySnapshot.forEach((doc) => {
+            productos.push({ id: doc.id, ...doc.data() });
+        });
+        console.log(`✅ Obtenidos ${productos.length} productos de Firebase`);
+        return productos;
+    } catch (error) {
+        console.error("❌ Error obteniendo productos: ", error);
+        return [];
+    }
+};
+
+// Función para escuchar productos en tiempo real
+window.escucharProductosTiempoReal = function() {
+    try {
+        console.log('👂 INICIANDO ESCUCHA EN TIEMPO REAL DE PRODUCTOS...');
+        
+        // Usar una consulta más simple que funcione incluso sin productos
+        const q = collection(db, "productos");
+        
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+            console.log('🔄 CAMBIOS DETECTADOS EN PRODUCTOS DE FIREBASE:', querySnapshot.size, 'productos');
+            console.log('📊 Estado de la consulta:', querySnapshot.metadata.fromCache ? 'CACHE' : 'SERVER');
+            const productos = [];
+            querySnapshot.forEach((doc) => {
+                const producto = { id: doc.id, ...doc.data() };
+                productos.push(producto);
+                console.log('📦 Producto recibido:', producto.producto, '-', producto.sede, '-', producto.cantidad, '- ID:', doc.id);
+            });
+            
+            // Actualizar el inventario global
+            if (window.inventario !== undefined) {
+                // Convertir productos a formato de inventario
+                const nuevoInventario = {};
+                productos.forEach(producto => {
+                    const clave = `${producto.producto}_${producto.sede}`;
+                    nuevoInventario[clave] = {
+                        producto: producto.producto,
+                        cantidad: producto.cantidad,
+                        sede: producto.sede,
+                        lote: producto.lote || '',
+                        fechaVencimiento: producto.fechaVencimiento || '',
+                        diasRestantes: producto.diasRestantes || 0
+                    };
+                });
+                
+                window.inventario = nuevoInventario;
+                console.log(`✅ INVENTARIO ACTUALIZADO CON ${Object.keys(nuevoInventario).length} PRODUCTOS`);
+                
+                // Guardar en localStorage
+                localStorage.setItem('inventario', JSON.stringify(nuevoInventario));
+                console.log('💾 Inventario guardado en localStorage');
+                
+                // Actualizar la interfaz de stock siempre que haya cambios
+                if (window.mostrarStockActual) {
+                    console.log('🔄 Actualizando interfaz de stock...');
+                    window.mostrarStockActual();
+                } else {
+                    console.log('⚠️ Función mostrarStockActual no disponible');
+                }
+                
+                // Mostrar notificación de sincronización
+                if (window.mostrarMensaje) {
+                    window.mostrarMensaje(`🔄 ${Object.keys(nuevoInventario).length} productos sincronizados`, 'info');
+                }
+            } else {
+                console.log('⚠️ Variable inventario no está disponible aún');
+            }
+        }, (error) => {
+            console.error('❌ ERROR EN ESCUCHA DE TIEMPO REAL DE PRODUCTOS:', error);
+            console.error('❌ Código de error:', error.code);
+            console.error('❌ Mensaje de error:', error.message);
+            
+            if (window.mostrarMensaje) {
+                window.mostrarMensaje(`❌ Error en sincronización de productos: ${error.message}`, 'error');
+            }
+        });
+        
+        // Guardar la función de desuscripción
+        window.unsubscribeProductos = unsubscribe;
+        console.log('✅ ESCUCHA EN TIEMPO REAL DE PRODUCTOS CONFIGURADA');
+        return unsubscribe;
+    } catch (error) {
+        console.error('❌ ERROR CONFIGURANDO ESCUCHA EN TIEMPO REAL DE PRODUCTOS:', error);
+        return null;
+    }
+};
+
+// Función para actualizar producto en Firebase
+window.actualizarProductoFirebase = async function(productoId, datosActualizados) {
+    try {
+        const productoRef = doc(db, "productos", productoId);
+        await updateDoc(productoRef, {
+            ...datosActualizados,
+            ultimaActualizacion: new Date().toISOString()
+        });
+        console.log("✅ Producto actualizado con ID: ", productoId);
+        
+        // Actualizar localStorage también
+        const productos = JSON.parse(localStorage.getItem('productos') || '[]');
+        const index = productos.findIndex(p => p.id === productoId);
+        if (index !== -1) {
+            productos[index] = { ...productos[index], ...datosActualizados, ultimaActualizacion: new Date().toISOString() };
+            localStorage.setItem('productos', JSON.stringify(productos));
+        }
+        
+    } catch (error) {
+        console.error("❌ Error actualizando producto: ", error);
+        throw error;
+    }
+};
+
+// Función para eliminar producto de Firebase
+window.eliminarProductoFirebase = async function(productoId) {
+    try {
+        await deleteDoc(doc(db, "productos", productoId));
+        console.log("✅ Producto eliminado con ID: ", productoId);
+        
+        // Actualizar localStorage también
+        const productos = JSON.parse(localStorage.getItem('productos') || '[]');
+        const productosFiltrados = productos.filter(p => p.id !== productoId);
+        localStorage.setItem('productos', JSON.stringify(productosFiltrados));
+        
+    } catch (error) {
+        console.error("❌ Error eliminando producto: ", error);
+        throw error;
+    }
+};
+
+// ==================== FUNCIONES PARA SEDES ====================
+
+// Función para agregar sede a Firebase
+window.agregarSedeFirebase = async function(sede) {
+    try {
+        const docRef = await addDoc(collection(db, "sedes"), {
+            ...sede,
+            fechaCreacion: new Date().toISOString()
+        });
+        console.log("✅ Sede agregada con ID: ", docRef.id);
+        
+        // Actualizar localStorage también
+        const sedes = JSON.parse(localStorage.getItem('sedes') || '[]');
+        sedes.push({ id: docRef.id, ...sede, fechaCreacion: new Date().toISOString() });
+        localStorage.setItem('sedes', JSON.stringify(sedes));
+        
+        return docRef.id;
+    } catch (error) {
+        console.error("❌ Error agregando sede: ", error);
+        throw error;
+    }
+};
+
+// Función para obtener sedes de Firebase
+window.obtenerSedesFirebase = async function() {
+    try {
+        const querySnapshot = await getDocs(collection(db, "sedes"));
+        const sedes = [];
+        querySnapshot.forEach((doc) => {
+            sedes.push({ id: doc.id, ...doc.data() });
+        });
+        console.log(`✅ Obtenidas ${sedes.length} sedes de Firebase`);
+        return sedes;
+    } catch (error) {
+        console.error("❌ Error obteniendo sedes: ", error);
+        return [];
+    }
+};
+
+// ==================== FUNCIONES DE SINCRONIZACIÓN ====================
+
+// Función para sincronizar datos locales con Firebase
+window.sincronizarConFirebase = async function() {
+    try {
+        console.log('🔄 Iniciando sincronización con Firebase...');
+        actualizarIndicadorFirebase('syncing', 'Sincronizando datos con Firebase...');
+        
+        // Obtener datos de Firebase
+        const movimientosFirebase = await obtenerMovimientosFirebase();
+        const productosFirebase = await obtenerProductosFirebase();
+        const sedesFirebase = await obtenerSedesFirebase();
+
+        // Actualizar localStorage con datos de Firebase
+        localStorage.setItem('historial', JSON.stringify(movimientosFirebase));
+        localStorage.setItem('productos', JSON.stringify(productosFirebase));
+        localStorage.setItem('sedes', JSON.stringify(sedesFirebase));
+
+        // Actualizar variables globales si están disponibles
+        if (window.historial !== undefined) {
+            window.historial = movimientosFirebase;
+        }
+        
+        if (window.inventario !== undefined) {
+            // Convertir productos a formato de inventario
+            const nuevoInventario = {};
+            productosFirebase.forEach(producto => {
+                const clave = `${producto.producto}_${producto.sede}`;
+                nuevoInventario[clave] = {
+                    producto: producto.producto,
+                    cantidad: producto.cantidad,
+                    sede: producto.sede,
+                    lote: producto.lote || '',
+                    fechaVencimiento: producto.fechaVencimiento || '',
+                    diasRestantes: producto.diasRestantes || 0
+                };
+            });
+            window.inventario = nuevoInventario;
+        }
+
+        console.log('✅ Datos sincronizados con Firebase');
+        actualizarIndicadorFirebase('connected', 'Datos sincronizados con Firebase');
+        
+        // Verificar si hay productos en Firebase
+        const cantidadProductos = await window.verificarProductosFirebase();
+        
+        // Iniciar escuchas en tiempo real
+        if (window.escucharMovimientosTiempoReal) {
+            window.escucharMovimientosTiempoReal();
+        }
+        
+        if (window.escucharProductosTiempoReal) {
+            window.escucharProductosTiempoReal();
+        }
+        
+        // Mostrar notificación de éxito
+        if (cantidadProductos === 0) {
+            mostrarNotificacionFirebase('Sincronización activada. Haz un movimiento para crear productos automáticamente.', 'warning');
+        } else {
+            mostrarNotificacionFirebase(`Datos sincronizados y escucha en tiempo real activada (${cantidadProductos} productos)`, 'success');
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('❌ Error sincronizando con Firebase:', error);
+        actualizarIndicadorFirebase('disconnected', 'Error de sincronización - Modo local');
+        mostrarNotificacionFirebase('Error de sincronización con Firebase', 'error');
+        return false;
+    }
+};
+
+// Función para migrar datos locales a Firebase
+window.migrarDatosAFirebase = async function() {
+    try {
+        console.log('🔄 Iniciando migración de datos locales a Firebase...');
+        
+        // Obtener datos locales
+        const movimientosLocales = JSON.parse(localStorage.getItem('movimientos') || '[]');
+        const productosLocales = JSON.parse(localStorage.getItem('productos') || '[]');
+        const sedesLocales = JSON.parse(localStorage.getItem('sedes') || '[]');
+
+        let movimientosMigrados = 0;
+        let productosMigrados = 0;
+        let sedesMigradas = 0;
+
+        // Migrar movimientos
+        for (const movimiento of movimientosLocales) {
+            if (movimiento.id && !movimiento.id.startsWith('firebase_')) {
+                await agregarMovimientoFirebase(movimiento);
+                movimientosMigrados++;
+            }
+        }
+
+        // Migrar productos
+        for (const producto of productosLocales) {
+            if (producto.id && !producto.id.startsWith('firebase_')) {
+                await agregarProductoFirebase(producto);
+                productosMigrados++;
+            }
+        }
+
+        // Migrar sedes
+        for (const sede of sedesLocales) {
+            if (sede.id && !sede.id.startsWith('firebase_')) {
+                await agregarSedeFirebase(sede);
+                sedesMigradas++;
+            }
+        }
+
+        console.log(`✅ Migración completada: ${movimientosMigrados} movimientos, ${productosMigrados} productos, ${sedesMigradas} sedes`);
+        return true;
+    } catch (error) {
+        console.error('❌ Error en migración:', error);
+        return false;
+    }
+};
+
+// ==================== FUNCIONES DE UTILIDAD ====================
+
+// Función para verificar conexión con Firebase
+window.verificarConexionFirebase = async function() {
+    try {
+        console.log('🔍 VERIFICANDO CONEXIÓN CON FIREBASE...');
+        const testDoc = await addDoc(collection(db, "test"), {
+            timestamp: new Date().toISOString(),
+            test: true
+        });
+        await deleteDoc(doc(db, "test", testDoc.id));
+        console.log('✅ CONEXIÓN CON FIREBASE VERIFICADA');
+        return true;
+    } catch (error) {
+        console.error('❌ ERROR DE CONEXIÓN CON FIREBASE:', error);
+        console.error('❌ Código de error:', error.code);
+        console.error('❌ Mensaje de error:', error.message);
+        return false;
+    }
+};
+
+// Función para debugging completo de Firebase
+window.debugFirebase = async function() {
+    console.log('🔍 === DEBUG COMPLETO DE FIREBASE ===');
+    
+    // Verificar autenticación
+    console.log('👤 Usuario autenticado:', auth.currentUser ? auth.currentUser.uid : 'No autenticado');
+    
+    // Verificar conexión
+    const conectado = await verificarConexionFirebase();
+    console.log('🌐 Conexión a Firebase:', conectado ? '✅ Conectado' : '❌ Desconectado');
+    
+    // Verificar movimientos en Firebase
+    try {
+        const movimientos = await obtenerMovimientosFirebase();
+        console.log('📋 Movimientos en Firebase:', movimientos.length);
+        movimientos.forEach((mov, index) => {
+            console.log(`  ${index + 1}. ${mov.producto} - ${mov.tipo} - ${mov.fecha}`);
+        });
+    } catch (error) {
+        console.error('❌ Error obteniendo movimientos:', error);
+    }
+    
+    // Verificar productos en Firebase
+    try {
+        const productos = await obtenerProductosFirebase();
+        console.log('📦 Productos en Firebase:', productos.length);
+        productos.forEach((prod, index) => {
+            console.log(`  ${index + 1}. ${prod.producto} - ${prod.sede} - ${prod.cantidad}`);
+        });
+    } catch (error) {
+        console.error('❌ Error obteniendo productos:', error);
+    }
+    
+    // Verificar datos locales
+    const movimientosLocales = JSON.parse(localStorage.getItem('historial') || '[]');
+    const inventarioLocal = JSON.parse(localStorage.getItem('inventario') || '{}');
+    console.log('💾 Movimientos locales:', movimientosLocales.length);
+    console.log('💾 Productos en inventario local:', Object.keys(inventarioLocal).length);
+    
+    // Verificar variable inventario global
+    if (window.inventario !== undefined) {
+        console.log('🌐 Variable inventario global:', Object.keys(window.inventario).length, 'productos');
+        Object.keys(window.inventario).forEach(clave => {
+            const producto = window.inventario[clave];
+            console.log(`  - ${clave}: ${producto.cantidad} unidades`);
+        });
+    } else {
+        console.log('⚠️ Variable inventario global no está disponible');
+    }
+    
+    // Verificar si hay escuchas activas
+    console.log('👂 Escucha de movimientos activa:', window.unsubscribeMovimientos ? '✅ Sí' : '❌ No');
+    console.log('👂 Escucha de productos activa:', window.unsubscribeProductos ? '✅ Sí' : '❌ No');
+    
+    console.log('🔍 === FIN DEBUG FIREBASE ===');
+    
+    return {
+        autenticado: !!auth.currentUser,
+        conectado,
+        movimientosFirebase: (await obtenerMovimientosFirebase()).length,
+        productosFirebase: (await obtenerProductosFirebase()).length,
+        movimientosLocales: movimientosLocales.length,
+        inventarioLocal: Object.keys(inventarioLocal).length,
+        inventarioGlobal: window.inventario ? Object.keys(window.inventario).length : 0,
+        escuchaMovimientos: !!window.unsubscribeMovimientos,
+        escuchaProductos: !!window.unsubscribeProductos
+    };
+};
+
+// Función para limpiar datos de prueba
+window.limpiarDatosPrueba = async function() {
+    try {
+        console.log('🧹 Limpiando datos de prueba...');
+        
+        // Obtener todos los documentos de prueba
+        const movimientos = await getDocs(collection(db, "movimientos"));
+        const productos = await getDocs(collection(db, "productos"));
+        const sedes = await getDocs(collection(db, "sedes"));
+        
+        // Eliminar movimientos de prueba
+        for (const doc of movimientos.docs) {
+            if (doc.data().producto && doc.data().producto.includes('PRUEBA')) {
+                await deleteDoc(doc.ref);
+            }
+        }
+        
+        // Eliminar productos de prueba
+        for (const doc of productos.docs) {
+            if (doc.data().producto && doc.data().producto.includes('PRUEBA')) {
+                await deleteDoc(doc.ref);
+            }
+        }
+        
+        console.log('✅ Datos de prueba eliminados');
+        return true;
+    } catch (error) {
+        console.error('❌ Error limpiando datos de prueba:', error);
+        return false;
+    }
+};
+
+// Función para restablecer inventario completo en Firebase
+window.restablecerInventarioFirebase = async function() {
+    try {
+        console.log('🔄 RESTABLECIENDO INVENTARIO COMPLETO EN FIREBASE...');
+        
+        // Eliminar todos los productos de Firebase
+        const productosSnapshot = await getDocs(collection(db, "productos"));
+        console.log(`📦 Eliminando ${productosSnapshot.size} productos de Firebase...`);
+        
+        for (const doc of productosSnapshot.docs) {
+            await deleteDoc(doc.ref);
+            console.log(`🗑️ Producto eliminado: ${doc.id}`);
+        }
+        
+        // Eliminar todos los movimientos de Firebase
+        const movimientosSnapshot = await getDocs(collection(db, "movimientos"));
+        console.log(`📋 Eliminando ${movimientosSnapshot.size} movimientos de Firebase...`);
+        
+        for (const doc of movimientosSnapshot.docs) {
+            await deleteDoc(doc.ref);
+            console.log(`🗑️ Movimiento eliminado: ${doc.id}`);
+        }
+        
+        console.log('✅ INVENTARIO RESTABLECIDO EN FIREBASE');
+        
+        // Mostrar notificación
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje('✅ Inventario restablecido en Firebase y sincronizado', 'exito');
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('❌ ERROR RESTABLECIENDO INVENTARIO EN FIREBASE:', error);
+        console.error('❌ Detalles del error:', error.message, error.code);
+        
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje(`❌ Error restableciendo inventario: ${error.message}`, 'error');
+        }
+        
+        return false;
+    }
+};
+
+// Función para restablecer solo productos (mantener movimientos)
+window.restablecerProductosFirebase = async function() {
+    try {
+        console.log('🔄 RESTABLECIENDO SOLO PRODUCTOS EN FIREBASE...');
+        
+        // Eliminar todos los productos de Firebase
+        const productosSnapshot = await getDocs(collection(db, "productos"));
+        console.log(`📦 Eliminando ${productosSnapshot.size} productos de Firebase...`);
+        
+        for (const doc of productosSnapshot.docs) {
+            await deleteDoc(doc.ref);
+            console.log(`🗑️ Producto eliminado: ${doc.id}`);
+        }
+        
+        console.log('✅ PRODUCTOS RESTABLECIDOS EN FIREBASE');
+        
+        // Mostrar notificación
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje('✅ Productos restablecidos en Firebase y sincronizados', 'exito');
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('❌ ERROR RESTABLECIENDO PRODUCTOS EN FIREBASE:', error);
+        console.error('❌ Detalles del error:', error.message, error.code);
+        
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje(`❌ Error restableciendo productos: ${error.message}`, 'error');
+        }
+        
+        return false;
+    }
+};
+
+// Función para verificar y crear productos de prueba en Firebase
+window.verificarProductosFirebase = async function() {
+    try {
+        console.log('🔍 VERIFICANDO PRODUCTOS EN FIREBASE...');
+        
+        const productosSnapshot = await getDocs(collection(db, "productos"));
+        console.log(`📦 Productos encontrados en Firebase: ${productosSnapshot.size}`);
+        
+        if (productosSnapshot.size === 0) {
+            console.log('⚠️ No hay productos en Firebase. Esto puede causar problemas de sincronización.');
+            console.log('💡 Haz un movimiento (entrada, salida o devolución) para crear productos automáticamente.');
+            
+            // Mostrar notificación informativa
+            if (window.mostrarMensaje) {
+                window.mostrarMensaje('⚠️ No hay productos en Firebase. Haz un movimiento para crear productos automáticamente.', 'warning');
+            }
+        } else {
+            console.log('✅ Productos encontrados en Firebase:');
+            productosSnapshot.forEach((doc) => {
+                const producto = doc.data();
+                console.log(`  - ${producto.producto} (${producto.sede}): ${producto.cantidad} unidades`);
+            });
+        }
+        
+        return productosSnapshot.size;
+    } catch (error) {
+        console.error('❌ Error verificando productos en Firebase:', error);
+        return 0;
+    }
+};
+
+// Función para debug del inventario
+window.debugInventario = async function() {
+    try {
+        console.log('🔍 === DEBUG INVENTARIO ===');
+        
+        // Verificar inventario local
+        console.log('📦 INVENTARIO LOCAL:');
+        console.log('  - Variable window.inventario:', window.inventario ? Object.keys(window.inventario).length + ' productos' : 'NO DEFINIDA');
+        if (window.inventario) {
+            Object.entries(window.inventario).forEach(([clave, producto]) => {
+                console.log(`    ${clave}: ${producto.cantidad} unidades`);
+            });
+        }
+        
+        // Verificar localStorage
+        const inventarioLocalStorage = localStorage.getItem('inventario');
+        console.log('💾 LOCALSTORAGE:');
+        if (inventarioLocalStorage) {
+            const inventarioLS = JSON.parse(inventarioLocalStorage);
+            console.log('  - Productos en localStorage:', Object.keys(inventarioLS).length);
+        } else {
+            console.log('  - No hay inventario en localStorage');
+        }
+        
+        // Verificar Firebase
+        console.log('🔥 FIREBASE:');
+        const productosSnapshot = await getDocs(collection(db, "productos"));
+        console.log('  - Productos en Firebase:', productosSnapshot.size);
+        if (productosSnapshot.size === 0) {
+            console.log('  ⚠️ NO HAY PRODUCTOS EN FIREBASE - Esto puede causar problemas de sincronización');
+            console.log('  💡 Haz un movimiento para crear productos automáticamente');
+        } else {
+            productosSnapshot.forEach((doc) => {
+                const producto = doc.data();
+                console.log(`    ${doc.id}: ${producto.producto} - ${producto.sede} - ${producto.cantidad}`);
+            });
+        }
+        
+        // Verificar escuchas activas
+        console.log('👂 ESCUCHAS ACTIVAS:');
+        console.log('  - Escucha movimientos:', !!window.unsubscribeMovimientos);
+        console.log('  - Escucha productos:', !!window.unsubscribeProductos);
+        
+        // Verificar función mostrarStockActual
+        console.log('🔄 FUNCIONES:');
+        console.log('  - mostrarStockActual disponible:', !!window.mostrarStockActual);
+        
+        console.log('🔍 === FIN DEBUG INVENTARIO ===');
+        
+        return {
+            inventarioLocal: window.inventario ? Object.keys(window.inventario).length : 0,
+            inventarioLocalStorage: inventarioLocalStorage ? Object.keys(JSON.parse(inventarioLocalStorage)).length : 0,
+            inventarioFirebase: productosSnapshot.size,
+            escuchasActivas: {
+                movimientos: !!window.unsubscribeMovimientos,
+                productos: !!window.unsubscribeProductos
+            }
+        };
+    } catch (error) {
+        console.error('❌ Error en debug inventario:', error);
+        return null;
+    }
+};
+
+// ==================== INICIALIZACIÓN ====================
+
+// Función para limpiar escuchas en tiempo real
+window.limpiarEscuchasTiempoReal = function() {
+    try {
+        if (window.unsubscribeMovimientos) {
+            window.unsubscribeMovimientos();
+            console.log('✅ Escucha de movimientos detenida');
+        }
+        if (window.unsubscribeProductos) {
+            window.unsubscribeProductos();
+            console.log('✅ Escucha de productos detenida');
+        }
+    } catch (error) {
+        console.error('❌ Error limpiando escuchas:', error);
+    }
+};
+
+// Función para reiniciar sincronización
+window.reiniciarSincronizacion = async function() {
+    try {
+        console.log('🔄 Reiniciando sincronización...');
+        
+        // Limpiar escuchas existentes
+        limpiarEscuchasTiempoReal();
+        
+        // Esperar un momento
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Reiniciar sincronización
+        await sincronizarConFirebase();
+        
+        console.log('✅ Sincronización reiniciada');
+        return true;
+    } catch (error) {
+        console.error('❌ Error reiniciando sincronización:', error);
+        return false;
+    }
+};
+
+// Función para forzar actualización del inventario
+window.actualizarInventarioDesdeFirebase = async function() {
+    try {
+        console.log('🔄 Forzando actualización del inventario desde Firebase...');
+        
+        // Obtener productos de Firebase
+        const productos = await obtenerProductosFirebase();
+        console.log(`📦 Obtenidos ${productos.length} productos de Firebase`);
+        
+        // Convertir a formato de inventario
+        const nuevoInventario = {};
+        productos.forEach(producto => {
+            const clave = `${producto.producto}_${producto.sede}`;
+            nuevoInventario[clave] = {
+                producto: producto.producto,
+                cantidad: producto.cantidad,
+                sede: producto.sede,
+                lote: producto.lote || '',
+                fechaVencimiento: producto.fechaVencimiento || '',
+                diasRestantes: producto.diasRestantes || 0
+            };
+            console.log(`📦 Producto procesado: ${producto.producto} - ${producto.sede} - ${producto.cantidad}`);
+        });
+        
+        // Actualizar variable global
+        if (window.inventario !== undefined) {
+            window.inventario = nuevoInventario;
+            console.log(`✅ Inventario global actualizado con ${Object.keys(nuevoInventario).length} productos`);
+        }
+        
+        // Guardar en localStorage
+        localStorage.setItem('inventario', JSON.stringify(nuevoInventario));
+        console.log('💾 Inventario guardado en localStorage');
+        
+        // Actualizar interfaz
+        if (window.mostrarStockActual) {
+            window.mostrarStockActual();
+            console.log('🔄 Interfaz de stock actualizada');
+        }
+        
+        // Mostrar notificación
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje(`✅ Inventario actualizado: ${Object.keys(nuevoInventario).length} productos`, 'exito');
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('❌ Error actualizando inventario desde Firebase:', error);
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje(`❌ Error actualizando inventario: ${error.message}`, 'error');
+        }
+        return false;
+    }
+};
+
+// Función para forzar sincronización completa del inventario
+window.forzarSincronizacionInventario = async function() {
+    try {
+        console.log('🔄 FORZANDO SINCRONIZACIÓN COMPLETA DEL INVENTARIO...');
+        
+        // Detener escuchas actuales
+        if (window.unsubscribeProductos) {
+            window.unsubscribeProductos();
+            console.log('⏹️ Escucha de productos detenida');
+        }
+        
+        // Esperar un momento
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Actualizar desde Firebase
+        await window.actualizarInventarioDesdeFirebase();
+        
+        // Reiniciar escucha en tiempo real
+        window.escucharProductosTiempoReal();
+        console.log('👂 Escucha de productos reiniciada');
+        
+        // Mostrar notificación
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje('✅ Sincronización de inventario completada', 'exito');
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('❌ Error forzando sincronización:', error);
+        if (window.mostrarMensaje) {
+            window.mostrarMensaje(`❌ Error en sincronización: ${error.message}`, 'error');
+        }
+        return false;
+    }
+};
+
+        // Inicializar cuando la página esté lista
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🚀 Inicializando Firebase...');
+            
+            // Verificar conexión
+            verificarConexionFirebase().then((conectado) => {
+                if (conectado) {
+                    // Verificar si hay datos locales para migrar
+                    const movimientosLocales = JSON.parse(localStorage.getItem('historial') || '[]');
+                    if (movimientosLocales.length > 0) {
+                        console.log('📦 Datos locales encontrados, iniciando migración...');
+                        migrarDatosAFirebase().then(() => {
+                            console.log('✅ Migración completada, sincronizando...');
+                            sincronizarConFirebase();
+                        });
+                    } else {
+                        console.log('🔄 Sincronizando con Firebase...');
+                        sincronizarConFirebase();
+                    }
+                } else {
+                    console.log('⚠️ Usando modo offline (datos locales)');
+                }
+            });
+            
+            // Sincronización automática al cargar la página
+            setTimeout(() => {
+                if (window.sincronizarConFirebase) {
+                    console.log('🔄 Sincronización automática al cargar página...');
+                    sincronizarConFirebase();
+                }
+            }, 2000); // Esperar 2 segundos para que todo esté listo
+        });
+
+// Exportar para uso global
+window.FirebaseConfig = {
+    db,
+    auth,
+    app,
+    config: firebaseConfig
+};
+
+console.log('🔥 Firebase configurado correctamente');
