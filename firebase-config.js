@@ -364,10 +364,12 @@ window.escucharMovimientosTiempoReal = function() {
                 localStorage.setItem('historial', JSON.stringify(movimientos));
                 console.log('💾 Historial guardado en localStorage');
                 
-                // Actualizar la interfaz si está en la sección de historial
-                if (window.cargarHistorial && document.getElementById('seccion-historial').classList.contains('activa')) {
+                // Actualizar la interfaz de historial siempre que haya cambios
+                if (window.cargarHistorial) {
                     console.log('🔄 Actualizando interfaz de historial...');
                     window.cargarHistorial();
+                } else {
+                    console.log('⚠️ Función cargarHistorial no disponible');
                 }
                 
                 // Mostrar notificación de sincronización
