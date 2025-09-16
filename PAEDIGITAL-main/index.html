@@ -284,20 +284,6 @@
             font-size: 1rem;
         }
 
-        /* Indicador de actualizaciones automáticas */
-        #indicador-auto-refresh {
-            animation: pulse 2s infinite;
-        }
-
-        #indicador-auto-refresh.activo {
-            color: #2ecc71;
-        }
-
-        #indicador-auto-refresh.inactivo {
-            color: #e74c3c;
-            animation: none;
-        }
-
         /* Responsividad mejorada para el header profesional */
         @media (max-width: 768px) {
             header {
@@ -22507,10 +22493,6 @@
                     <i class="bi bi-calendar-check"></i>
                     <span id="current-date"></span>
                 </div>
-                <div class="status-item" id="indicador-auto-refresh">
-                    <i class="bi bi-arrow-clockwise" id="icono-auto-refresh-status"></i>
-                    <span id="texto-auto-refresh-status">Auto-actualizando</span>
-                </div>
             </div>
         </header>
         
@@ -22577,11 +22559,6 @@
                 <button class="boton-menu inventario" onclick="actualizarInventarioDesdeFirebase()" style="background: linear-gradient(135deg, #4ecdc4 0%, #44a08d 100%);">
                     <i class="bi bi-arrow-clockwise icono-boton"></i>
                     <span>ACTUALIZAR STOCK</span>
-                </button>
-                
-                <button class="boton-menu auto-refresh" onclick="toggleActualizacionesAutomaticas()" style="background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);">
-                    <i class="bi bi-play-circle icono-boton" id="icono-auto-refresh"></i>
-                    <span id="texto-auto-refresh">AUTO-ACTUALIZAR</span>
                 </button>
                 
                 <button class="boton-menu restablecer-productos" onclick="restablecerSoloProductos()" style="background: linear-gradient(135deg, #ff9a56 0%, #ff6b6b 100%);">
@@ -30430,236 +30407,6 @@
         // Hacer la función disponible globalmente
         window.debugMovimientos = debugMovimientos;
         
-        // FUNCIÓN PARA ACTUALIZAR INVENTARIO DESDE FIREBASE
-        async function actualizarInventarioDesdeFirebase() {
-            try {
-                console.log('🔄 Actualizando inventario desde Firebase...');
-                
-                // Verificar si Firebase está disponible
-                if (window.obtenerMovimientosFirebase && window.obtenerProductosFirebase) {
-                    // Cargar movimientos desde Firebase
-                    const movimientosFirebase = await window.obtenerMovimientosFirebase();
-                    historial = movimientosFirebase;
-                    console.log(`✅ Historial actualizado desde Firebase: ${historial.length} movimientos`);
-                    
-                    // Cargar productos desde Firebase
-                    const productosFirebase = await window.obtenerProductosFirebase();
-                    inventario = {};
-                    productosFirebase.forEach(producto => {
-                        const clave = `${producto.producto}_${producto.sede}`;
-                        inventario[clave] = {
-                            producto: producto.producto,
-                            cantidad: producto.cantidad,
-                            sede: producto.sede,
-                            lote: producto.lote || '',
-                            fechaVencimiento: producto.fechaVencimiento || '',
-                            diasRestantes: producto.diasRestantes || 0
-                        };
-                    });
-                    console.log(`✅ Inventario actualizado desde Firebase: ${Object.keys(inventario).length} productos`);
-                    
-                    // Calcular contadores desde Firebase
-                    contadores = { entradas: 0, salidas: 0, devoluciones: 0 };
-                    historial.forEach(movimiento => {
-                        if (movimiento.tipo === 'entrada') contadores.entradas++;
-                        else if (movimiento.tipo === 'salida') contadores.salidas++;
-                        else if (movimiento.tipo === 'devolucion') contadores.devoluciones++;
-                    });
-                    console.log('✅ Contadores actualizados desde Firebase:', contadores);
-                    
-                    // Actualizar la interfaz si estamos en la sección de stock
-                    const seccionStock = document.getElementById('seccion-stock');
-                    if (seccionStock && seccionStock.style.display !== 'none') {
-                        mostrarStockActual();
-                    }
-                    
-                    // Actualizar la interfaz si estamos en la sección de historial
-                    const seccionHistorial = document.getElementById('seccion-historial');
-                    if (seccionHistorial && seccionHistorial.style.display !== 'none') {
-                        cargarHistorial();
-                    }
-                    
-                    return true;
-                } else {
-                    console.log('⚠️ Firebase no disponible para actualización');
-                    return false;
-                }
-            } catch (error) {
-                console.error('❌ Error actualizando inventario desde Firebase:', error);
-                return false;
-            }
-        }
-
-        // VARIABLES PARA CONTROLAR LAS ACTUALIZACIONES AUTOMÁTICAS
-        let intervaloActualizacionStock = null;
-        let intervaloActualizacionMovimientos = null;
-
-        // FUNCIÓN PARA INICIAR ACTUALIZACIONES AUTOMÁTICAS
-        function iniciarActualizacionesAutomaticas() {
-            // Detener intervalos existentes si los hay
-            if (intervaloActualizacionStock) {
-                clearInterval(intervaloActualizacionStock);
-            }
-            if (intervaloActualizacionMovimientos) {
-                clearInterval(intervaloActualizacionMovimientos);
-            }
-            
-            // Actualizar stock cada segundo
-            intervaloActualizacionStock = setInterval(async () => {
-                await actualizarInventarioDesdeFirebase();
-            }, 1000);
-            
-            // Actualizar movimientos cada 2 segundos
-            intervaloActualizacionMovimientos = setInterval(async () => {
-                if (window.obtenerMovimientosFirebase) {
-                    try {
-                        const movimientosFirebase = await window.obtenerMovimientosFirebase();
-                        historial = movimientosFirebase;
-                        
-                        // Actualizar contadores
-                        contadores = { entradas: 0, salidas: 0, devoluciones: 0 };
-                        historial.forEach(movimiento => {
-                            if (movimiento.tipo === 'entrada') contadores.entradas++;
-                            else if (movimiento.tipo === 'salida') contadores.salidas++;
-                            else if (movimiento.tipo === 'devolucion') contadores.devoluciones++;
-                        });
-                        
-                        // Actualizar la interfaz si estamos en la sección de historial
-                        const seccionHistorial = document.getElementById('seccion-historial');
-                        if (seccionHistorial && seccionHistorial.style.display !== 'none') {
-                            cargarHistorial();
-                        }
-                    } catch (error) {
-                        console.error('❌ Error actualizando movimientos automáticamente:', error);
-                    }
-                }
-            }, 2000);
-            
-            // Actualizar indicador en el header
-            actualizarIndicadorAutoRefresh(true);
-            
-            console.log('✅ Actualizaciones automáticas iniciadas');
-        }
-
-        // FUNCIÓN PARA DETENER ACTUALIZACIONES AUTOMÁTICAS
-        function detenerActualizacionesAutomaticas() {
-            if (intervaloActualizacionStock) {
-                clearInterval(intervaloActualizacionStock);
-                intervaloActualizacionStock = null;
-            }
-            if (intervaloActualizacionMovimientos) {
-                clearInterval(intervaloActualizacionMovimientos);
-                intervaloActualizacionMovimientos = null;
-            }
-            
-            // Actualizar indicador en el header
-            actualizarIndicadorAutoRefresh(false);
-            
-            console.log('⏹️ Actualizaciones automáticas detenidas');
-        }
-
-        // FUNCIÓN PARA ACTUALIZAR EL INDICADOR DE AUTO-REFRESH EN EL HEADER
-        function actualizarIndicadorAutoRefresh(activo) {
-            const indicador = document.getElementById('indicador-auto-refresh');
-            const icono = document.getElementById('icono-auto-refresh-status');
-            const texto = document.getElementById('texto-auto-refresh-status');
-            
-            if (indicador && icono && texto) {
-                if (activo) {
-                    indicador.className = 'status-item activo';
-                    icono.className = 'bi bi-arrow-clockwise';
-                    texto.textContent = 'Auto-actualizando';
-                } else {
-                    indicador.className = 'status-item inactivo';
-                    icono.className = 'bi bi-pause-circle';
-                    texto.textContent = 'Auto-detener';
-                }
-            }
-        }
-
-        // VARIABLE PARA CONTROLAR EL ESTADO DE LAS ACTUALIZACIONES AUTOMÁTICAS
-        let actualizacionesAutomaticasActivas = true;
-
-        // FUNCIÓN PARA ALTERNAR ACTUALIZACIONES AUTOMÁTICAS
-        function toggleActualizacionesAutomaticas() {
-            const icono = document.getElementById('icono-auto-refresh');
-            const texto = document.getElementById('texto-auto-refresh');
-            const boton = document.querySelector('.boton-menu.auto-refresh');
-            
-            if (actualizacionesAutomaticasActivas) {
-                // Detener actualizaciones automáticas
-                detenerActualizacionesAutomaticas();
-                actualizacionesAutomaticasActivas = false;
-                
-                // Cambiar icono y texto
-                icono.className = 'bi bi-pause-circle icono-boton';
-                texto.textContent = 'DETENER AUTO';
-                boton.style.background = 'linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)';
-                
-                mostrarMensaje('⏹️ Actualizaciones automáticas detenidas', 'info');
-            } else {
-                // Iniciar actualizaciones automáticas
-                iniciarActualizacionesAutomaticas();
-                actualizacionesAutomaticasActivas = true;
-                
-                // Cambiar icono y texto
-                icono.className = 'bi bi-play-circle icono-boton';
-                texto.textContent = 'AUTO-ACTUALIZAR';
-                boton.style.background = 'linear-gradient(135deg, #2ecc71 0%, #27ae60 100%)';
-                
-                mostrarMensaje('▶️ Actualizaciones automáticas iniciadas', 'exito');
-            }
-        }
-
-        // FUNCIÓN PARA MOSTRAR MENSAJES DE ESTADO
-        function mostrarMensaje(mensaje, tipo = 'info') {
-            // Crear elemento de mensaje si no existe
-            let mensajeElement = document.getElementById('mensaje-estado');
-            if (!mensajeElement) {
-                mensajeElement = document.createElement('div');
-                mensajeElement.id = 'mensaje-estado';
-                mensajeElement.style.cssText = `
-                    position: fixed;
-                    top: 20px;
-                    right: 20px;
-                    padding: 15px 20px;
-                    border-radius: 8px;
-                    color: white;
-                    font-weight: bold;
-                    z-index: 10000;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-                    transition: all 0.3s ease;
-                `;
-                document.body.appendChild(mensajeElement);
-            }
-            
-            // Configurar colores según el tipo
-            switch (tipo) {
-                case 'exito':
-                    mensajeElement.style.background = 'linear-gradient(135deg, #2ecc71 0%, #27ae60 100%)';
-                    break;
-                case 'error':
-                    mensajeElement.style.background = 'linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)';
-                    break;
-                case 'info':
-                default:
-                    mensajeElement.style.background = 'linear-gradient(135deg, #3498db 0%, #2980b9 100%)';
-                    break;
-            }
-            
-            mensajeElement.textContent = mensaje;
-            mensajeElement.style.display = 'block';
-            mensajeElement.style.opacity = '1';
-            
-            // Ocultar mensaje después de 3 segundos
-            setTimeout(() => {
-                mensajeElement.style.opacity = '0';
-                setTimeout(() => {
-                    mensajeElement.style.display = 'none';
-                }, 300);
-            }, 3000);
-        }
-
         // INICIALIZACIÓN
         document.addEventListener('DOMContentLoaded', async function() {
             await cargarDatos();
@@ -30674,9 +30421,6 @@
             setTimeout(() => {
                 verificarComentariosStock();
             }, 1000);
-            
-            // Iniciar actualizaciones automáticas
-            iniciarActualizacionesAutomaticas();
             
             // Sistema de conexión eliminado - modo solo local
             
